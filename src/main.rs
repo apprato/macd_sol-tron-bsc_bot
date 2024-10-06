@@ -23,7 +23,6 @@ async fn fetch_all_coins(client: &Client) -> Result<Vec<Coin>, Box<dyn std::erro
 
     let response = client.get(url).send().await?;
 
-    // Check if the API response is in the expected format (array)
     if response.status().is_success() {
         let coins_data = response.json::<Vec<Coin>>().await?;
         debug!("Successfully fetched coins data");
@@ -41,7 +40,6 @@ async fn fetch_price_data(client: &Client, coin_id: &str) -> Result<Option<f64>,
     
     let response = client.get(&url).send().await?.json::<serde_json::Value>().await?;
 
-    // Check if the API returned a valid price format
     if let Some(price_map) = response.get(coin_id) {
         if let Some(price) = price_map.get("usd").and_then(|v| v.as_f64()) {
             debug!("Successfully fetched price for coin {}: {}", coin_id, price);
@@ -87,7 +85,7 @@ fn calculate_ema(prices: &[f64], period: usize) -> Vec<f64> {
     let mut ema = Vec::with_capacity(prices.len());
     let multiplier = 2.0 / (period as f64 + 1.0);
 
-    ema.push(prices[0]); // Initialize EMA with first price
+    ema.push(prices[0]);
 
     for price in prices.iter().skip(1) {
         let prev_ema = *ema.last().unwrap();
@@ -119,7 +117,6 @@ async fn execute_trade(token: &str, action: &str) {
 
 #[tokio::main]
 async fn main() {
-    // Initialize logging to write to debug.log
     CombinedLogger::init(vec![
         WriteLogger::new(
             LevelFilter::Debug,
@@ -131,54 +128,58 @@ async fn main() {
 
     let client = Client::new();
 
-    // Specify the network you want to scan: "solana", "binance-smart-chain", or "the-open-network"
-    let network_to_scan = "the-open-network"; // Change this line to scan a specific chain
+    // Specify the network and wick size
+    let network_to_scan = "the-open-network"; // Change this to the desired network
+    let wick_duration = Duration::from_secs(60); // Set to 60 seconds for 1-minute wicks
 
     // Fetch all coins from CoinGecko
     match fetch_all_coins(&client).await {
         Ok(all_coins) => {
-            // Filter coins by the specified network
             let coins = filter_coins_by_network(&all_coins, network_to_scan);
-            info!("Found {} coins on {}", coins.len(), network_to_scan);  // Log to debug.log
 
-            // Scan coins from the selected network
+            info!("Found {} coins on {}", coins.len(), network_to_scan);
+
+            let mut price_history: HashMap<String, Vec<f64>> = HashMap::new();
+
             loop {
                 for coin in &coins {
                     match fetch_price_data(&client, &coin.id).await {
                         Ok(Some(price)) => {
-                            // Print to console when price data is found
                             println!("Price data found for {}: ${}", coin.symbol, price);
 
-                            let prices: Vec<f64> = vec![price]; // Replace with real historical data
+                            let prices = price_history.entry(coin.symbol.clone()).or_insert_with(Vec::new);
+                            prices.push(price);
 
-                            if prices.len() >= 1 {  // Updated to handle even 1 price point for now
+                            if prices.len() >= 1 { // MACD calculated even with 1 point
                                 let (macd, signal) = calculate_macd(&prices);
 
-                                // Print MACD and Signal line to console
+                                // Always print MACD and Signal line to console
                                 println!("MACD line for {}: {:?}", coin.symbol, macd);
                                 println!("Signal line for {}: {:?}", coin.symbol, signal);
 
-                                if prices.len() >= 26 {  // Proceed only if we have enough data
+                                if prices.len() >= 26 {
                                     if let Some(action) = check_macd_signal(&macd, &signal) {
-                                        execute_trade(&coin.symbol, action).await;  // Show buy/sell signals
+                                        execute_trade(&coin.symbol, action).await;
                                     }
                                 }
                             }
+
+                            if prices.len() > 100 {
+                                prices.remove(0);  // Keep only the latest 100 prices
+                            }
                         }
                         Ok(None) => {
-                            debug!("No price data for {}", coin.id);  // Log missing price data
+                            debug!("No price data for {}", coin.id);
                         }
                         Err(e) => {
-                            debug!("Error fetching price for {}: {:?}", coin.id, e);  // Log errors
+                            debug!("Error fetching price for {}: {:?}", coin.id, e);
                         }
                     }
 
-                    // Sleep to avoid rate limits
-                    sleep(Duration::from_millis(100)).await;
+                    sleep(wick_duration).await;
                 }
 
-                // Sleep before the next round of price fetching
-                sleep(Duration::from_secs(30)).await; // Reduced sleep time for faster iteration
+                sleep(Duration::from_secs(1)).await;
             }
         }
         Err(e) => {
