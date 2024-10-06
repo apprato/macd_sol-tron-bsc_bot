@@ -7,6 +7,8 @@ use tokio::time::sleep;
 use log::{debug, info, error};
 use simplelog::*;
 
+const MAX_COINS_PER_BATCH: usize = 200; // Modify this variable to change the number of coins per batch
+
 #[derive(Deserialize, Debug, Clone)]
 struct Coin {
     id: String,
@@ -33,45 +35,45 @@ async fn fetch_all_coins(client: &Client) -> Result<Vec<Coin>, Box<dyn std::erro
         let status = response.status();
         let body = response.text().await?;
         error!("Failed to fetch coins data. Status: {}, Body: {}", status, body);
-        println!("Failed to fetch coins data. Status: {}, Body: {}", status, body);  // Add this line for console output
+        println!("Failed to fetch coins data. Status: {}, Body: {}", status, body);
         Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "Failed to fetch coins data")))
     }
 }
 
-// Fetch price data for a specific coin from CoinGecko
-async fn fetch_price_data(client: &Client, coin_id: &str) -> Result<Option<f64>, Box<dyn std::error::Error>> {
-    let url = format!("https://api.coingecko.com/api/v3/simple/price?ids={}&vs_currencies=usd", coin_id);
-    debug!("Fetching price for coin: {}", coin_id);
-    
+// Fetch price data for a batch of coins from CoinGecko
+async fn fetch_price_data(client: &Client, coin_ids: &[&str]) -> Result<HashMap<String, f64>, Box<dyn std::error::Error>> {
+    let ids = coin_ids.join(",");
+    let url = format!("https://api.coingecko.com/api/v3/simple/price?ids={}&vs_currencies=usd", ids);
+    debug!("Fetching price for coins: {:?}", coin_ids);
+
     let response = client.get(&url).send().await?.json::<serde_json::Value>().await?;
 
-    if let Some(price_map) = response.get(coin_id) {
-        if let Some(price) = price_map.get("usd").and_then(|v| v.as_f64()) {
-            debug!("Successfully fetched price for coin {}: {}", coin_id, price);
-            return Ok(Some(price));
-        } else {
-            debug!("Price for {} not found in expected format.", coin_id);
-            return Ok(None);
+    let mut prices = HashMap::new();
+    for &coin_id in coin_ids {
+        if let Some(price_map) = response.get(coin_id) {
+            if let Some(price) = price_map.get("usd").and_then(|v| v.as_f64()) {
+                prices.insert(coin_id.to_string(), price);
+            }
         }
-    } else {
-        debug!("Coin {} not found in API response.", coin_id);
-        return Ok(None);
     }
+    Ok(prices)
 }
 
-// Filter coins by platform
+// Helper function to split the coin list into batches of up to MAX_COINS_PER_BATCH
+fn split_into_batches<'a>(coins: &'a [Coin]) -> Vec<Vec<&'a Coin>> {
+    coins.chunks(MAX_COINS_PER_BATCH).map(|chunk| chunk.iter().collect()).collect()
+}
+
+// Function to filter coins by platform
 fn filter_coins_by_network(coins: &[Coin], platform: &str) -> Vec<Coin> {
-    debug!("Filtering coins for platform: {}", platform);
-    let filtered_coins: Vec<Coin> = coins
+    coins
         .iter()
         .filter(|coin| coin.platforms.contains_key(platform))
         .cloned()
-        .collect();
-    debug!("Found {} coins for platform {}", filtered_coins.len(), platform);
-    filtered_coins
+        .collect()
 }
 
-// MACD calculation functions
+// MACD calculation functions remain the same...
 fn calculate_macd(prices: &[f64]) -> (Vec<f64>, Vec<f64>) {
     let ema_12 = calculate_ema(prices, 12);
     let ema_26 = calculate_ema(prices, 26);
@@ -135,58 +137,61 @@ async fn main() {
 
     // Specify the network and wick size
     let network_to_scan = "the-open-network"; // Change this to the desired network
-    let wick_duration = Duration::from_secs(1); // Set to 60 seconds for 1-minute wicks
+    let wick_duration = Duration::from_secs(60); // Set to 60 seconds for 1-minute wicks
 
     // Fetch all coins from CoinGecko
     match fetch_all_coins(&client).await {
         Ok(all_coins) => {
             let coins = filter_coins_by_network(&all_coins, network_to_scan);
-
             info!("Found {} coins on {}", coins.len(), network_to_scan);
+
+            // Split coins into batches of up to MAX_COINS_PER_BATCH
+            let coin_batches = split_into_batches(&coins);
+            info!("Processing {} batches of coins", coin_batches.len());
 
             // Keep price history across iterations
             let mut price_history: HashMap<String, Vec<f64>> = HashMap::new();
 
             loop {
-                for coin in &coins {
-                    match fetch_price_data(&client, &coin.id).await {
-                        Ok(Some(price)) => {
-                            println!("Price data found for {}: ${}", coin.symbol, price);
+                for batch in coin_batches.iter() {
+                    let coin_ids: Vec<&str> = batch.iter().map(|coin| coin.id.as_str()).collect();
 
-                            // Persist price history across iterations
-                            let prices = price_history.entry(coin.symbol.clone()).or_insert_with(Vec::new);
-                            
-                            if prices.is_empty() || (prices.last().unwrap() - price).abs() > 0.000001 {
-                                prices.push(price);
-                            }
+                    match fetch_price_data(&client, &coin_ids).await {
+                        Ok(prices) => {
+                            for coin in batch {
+                                if let Some(&price) = prices.get(&coin.id) {
+                                    println!("Price data found for {}: ${}", coin.symbol, price);
 
-                            // Output the price history length and MACD if there are enough prices
-                            println!("Price history length for {}: {}", coin.symbol, prices.len());
-                            println!("Price history for {}: {:?}", coin.symbol, prices);
+                                    // Persist price history across iterations
+                                    let prices = price_history.entry(coin.symbol.clone()).or_insert_with(Vec::new);
+                                    prices.push(price);
 
-                            if prices.len() >= 12 {
-                                let (macd, signal) = calculate_macd(&prices);
+                                    // Output the price history length and MACD if there are enough prices
+                                    println!("Price history length for {}: {}", coin.symbol, prices.len());
+                                    println!("Price history for {}: {:?}", coin.symbol, prices);
 
-                                // Always print MACD and Signal line to console
-                                println!("MACD line for {}: {:?}", coin.symbol, macd);
-                                println!("Signal line for {}: {:?}", coin.symbol, signal);
+                                    if prices.len() >= 12 {
+                                        let (macd, signal) = calculate_macd(&prices);
 
-                                if prices.len() >= 26 {
-                                    if let Some(action) = check_macd_signal(&macd, &signal) {
-                                        execute_trade(&coin.symbol, action).await;
+                                        // Always print MACD and Signal line to console
+                                        println!("MACD line for {}: {:?}", coin.symbol, macd);
+                                        println!("Signal line for {}: {:?}", coin.symbol, signal);
+
+                                        if prices.len() >= 26 {
+                                            if let Some(action) = check_macd_signal(&macd, &signal) {
+                                                execute_trade(&coin.symbol, action).await;
+                                            }
+                                        }
+                                    }
+
+                                    if prices.len() > 100 {
+                                        prices.remove(0);  // Keep only the latest 100 prices
                                     }
                                 }
                             }
-
-                            if prices.len() > 100 {
-                                prices.remove(0);  // Keep only the latest 100 prices
-                            }
-                        }
-                        Ok(None) => {
-                            debug!("No price data for {}", coin.id);
                         }
                         Err(e) => {
-                            debug!("Error fetching price for {}: {:?}", coin.id, e);
+                            debug!("Error fetching prices for batch: {:?}", e);
                         }
                     }
 
