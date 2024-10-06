@@ -23,12 +23,15 @@ async fn fetch_all_coins(client: &Client) -> Result<Vec<Coin>, Box<dyn std::erro
 
     let response = client.get(url).send().await?;
 
+    // Capture the status and body if the request fails
     if response.status().is_success() {
         let coins_data = response.json::<Vec<Coin>>().await?;
         debug!("Successfully fetched coins data");
         Ok(coins_data)
     } else {
-        error!("Failed to fetch coins data: {}", response.status());
+        let status = response.status();
+        let body = response.text().await?;
+        error!("Failed to fetch coins data. Status: {}, Body: {}", status, body);
         Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "Failed to fetch coins data")))
     }
 }
@@ -128,9 +131,12 @@ async fn main() {
 
     let client = Client::new();
 
+    // Delay to avoid potential rate limits
+    sleep(Duration::from_secs(1)).await; 
+
     // Specify the network and wick size
     let network_to_scan = "the-open-network"; // Change this to the desired network
-    let wick_duration = Duration::from_secs(60); // Set to 60 seconds for 1-minute wicks
+    let wick_duration = Duration::from_secs(1); // Set to 60 seconds for 1-minute wicks, 1 second can be used for testing price.history is working.
 
     // Fetch all coins from CoinGecko
     match fetch_all_coins(&client).await {
@@ -150,7 +156,11 @@ async fn main() {
                             let prices = price_history.entry(coin.symbol.clone()).or_insert_with(Vec::new);
                             prices.push(price);
 
-                            if prices.len() >= 1 { // MACD calculated even with 1 point
+                            // Output the price history length and MACD if there are enough prices
+                            println!("Price history length for {}: {}", coin.symbol, prices.len());
+                            println!("Price history for {}: {:?}", coin.symbol, prices);
+
+                            if prices.len() >= 12 {
                                 let (macd, signal) = calculate_macd(&prices);
 
                                 // Always print MACD and Signal line to console
