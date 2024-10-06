@@ -21,9 +21,10 @@ async fn fetch_all_coins(client: &Client) -> Result<Vec<Coin>, Box<dyn std::erro
     let url = "https://api.coingecko.com/api/v3/coins/list?include_platform=true";
     debug!("Fetching all coins from CoinGecko");
 
-    let response = client.get(url).send().await?;
+    let response = client.get(url)
+        .timeout(Duration::from_secs(10))  // Timeout after 10 seconds
+        .send().await?;
 
-    // Capture the status and body if the request fails
     if response.status().is_success() {
         let coins_data = response.json::<Vec<Coin>>().await?;
         debug!("Successfully fetched coins data");
@@ -32,6 +33,7 @@ async fn fetch_all_coins(client: &Client) -> Result<Vec<Coin>, Box<dyn std::erro
         let status = response.status();
         let body = response.text().await?;
         error!("Failed to fetch coins data. Status: {}, Body: {}", status, body);
+        println!("Failed to fetch coins data. Status: {}, Body: {}", status, body);  // Add this line for console output
         Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "Failed to fetch coins data")))
     }
 }
@@ -131,12 +133,9 @@ async fn main() {
 
     let client = Client::new();
 
-    // Delay to avoid potential rate limits
-    sleep(Duration::from_secs(1)).await; 
-
     // Specify the network and wick size
     let network_to_scan = "the-open-network"; // Change this to the desired network
-    let wick_duration = Duration::from_secs(1); // Set to 60 seconds for 1-minute wicks, 1 second can be used for testing price.history is working.
+    let wick_duration = Duration::from_secs(1); // Set to 60 seconds for 1-minute wicks
 
     // Fetch all coins from CoinGecko
     match fetch_all_coins(&client).await {
@@ -145,6 +144,7 @@ async fn main() {
 
             info!("Found {} coins on {}", coins.len(), network_to_scan);
 
+            // Keep price history across iterations
             let mut price_history: HashMap<String, Vec<f64>> = HashMap::new();
 
             loop {
@@ -153,8 +153,12 @@ async fn main() {
                         Ok(Some(price)) => {
                             println!("Price data found for {}: ${}", coin.symbol, price);
 
+                            // Persist price history across iterations
                             let prices = price_history.entry(coin.symbol.clone()).or_insert_with(Vec::new);
-                            prices.push(price);
+                            
+                            if prices.is_empty() || (prices.last().unwrap() - price).abs() > 0.000001 {
+                                prices.push(price);
+                            }
 
                             // Output the price history length and MACD if there are enough prices
                             println!("Price history length for {}: {}", coin.symbol, prices.len());
