@@ -182,6 +182,10 @@ async fn main() {
                                                 execute_trade(&coin.symbol, action).await;
                                             }
                                         }
+                                    } else {
+                                        // If not enough data, output placeholder values
+                                        println!("MACD line for {}: N/A (insufficient data)", coin.symbol);
+                                        println!("Signal line for {}: N/A (insufficient data)", coin.symbol);
                                     }
 
                                     if prices.len() > 100 {
