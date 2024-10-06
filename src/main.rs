@@ -118,8 +118,9 @@ fn check_macd_signal(macd_line: &[f64], signal_line: &[f64]) -> Option<&'static 
     }
 }
 
-async fn execute_trade(token: &str, action: &str) {
-    println!("{} signal for {}", action, token);  // Show buy/sell signals in console
+// Modify execute_trade to print only buy/sell signals to the console
+async fn execute_trade(token: &str, action: &str, address: &str) {
+    println!("{} signal for {}: {}", action, token, address);  // Print buy/sell signals and contract address
 }
 
 #[tokio::main]
@@ -128,7 +129,7 @@ async fn main() {
         WriteLogger::new(
             LevelFilter::Debug,
             Config::default(),
-            File::create("debug.log").unwrap(),
+            File::create("macd.log").unwrap(),  // Write detailed data to macd.log
         ),
     ])
     .unwrap();
@@ -137,7 +138,7 @@ async fn main() {
 
     // Specify the network and wick size
     let network_to_scan = "the-open-network"; // Change this to the desired network
-    let wick_duration = Duration::from_secs(60); // Set to 60 seconds for 1-minute wicks
+    let wick_duration = Duration::from_secs(2); // Set to 60 seconds for 1-minute wicks, 2 seconds for rapid testing then tune the bot.
 
     // Fetch all coins from CoinGecko
     match fetch_all_coins(&client).await {
@@ -160,32 +161,32 @@ async fn main() {
                         Ok(prices) => {
                             for coin in batch {
                                 if let Some(&price) = prices.get(&coin.id) {
-                                    println!("Price data found for {}: ${}", coin.symbol, price);
+                                    info!("Price data found for {}: ${}", coin.symbol, price);
 
                                     // Persist price history across iterations
                                     let prices = price_history.entry(coin.symbol.clone()).or_insert_with(Vec::new);
                                     prices.push(price);
 
-                                    // Output the price history length and MACD if there are enough prices
-                                    println!("Price history length for {}: {}", coin.symbol, prices.len());
-                                    println!("Price history for {}: {:?}", coin.symbol, prices);
+                                    // Log detailed price history, MACD, and signal line
+                                    info!("Price history length for {}: {}", coin.symbol, prices.len());
+                                    info!("Price history for {}: {:?}", coin.symbol, prices);
 
                                     if prices.len() >= 12 {
                                         let (macd, signal) = calculate_macd(&prices);
-
-                                        // Always print MACD and Signal line to console
-                                        println!("MACD line for {}: {:?}", coin.symbol, macd);
-                                        println!("Signal line for {}: {:?}", coin.symbol, signal);
+                                        info!("MACD line for {}: {:?}", coin.symbol, macd);
+                                        info!("Signal line for {}: {:?}", coin.symbol, signal);
 
                                         if prices.len() >= 26 {
                                             if let Some(action) = check_macd_signal(&macd, &signal) {
-                                                execute_trade(&coin.symbol, action).await;
+                                                // Fetch contract address for "the-open-network"
+                                                let address = coin.platforms.get("the-open-network").map(|s| s.as_str()).unwrap_or("N/A");
+                                                execute_trade(&coin.symbol, action, address).await;
                                             }
                                         }
                                     } else {
-                                        // If not enough data, output placeholder values
-                                        println!("MACD line for {}: N/A (insufficient data)", coin.symbol);
-                                        println!("Signal line for {}: N/A (insufficient data)", coin.symbol);
+                                        // Log insufficient data for MACD in macd.log
+                                        info!("MACD line for {}: N/A (insufficient data)", coin.symbol);
+                                        info!("Signal line for {}: N/A (insufficient data)", coin.symbol);
                                     }
 
                                     if prices.len() > 100 {
