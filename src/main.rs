@@ -102,7 +102,7 @@ fn calculate_ema(prices: &[f64], period: usize) -> Vec<f64> {
     ema
 }
 
-fn check_macd_signal(macd_line: &[f64], signal_line: &[f64]) -> Option<&'static str> {
+fn check_macd_signal(macd_line: &[f64], signal_line: &[f64], coin: &Coin) -> Option<String> {
     let macd_last = macd_line[macd_line.len() - 1];
     let macd_prev = macd_line[macd_line.len() - 2];
 
@@ -110,17 +110,18 @@ fn check_macd_signal(macd_line: &[f64], signal_line: &[f64]) -> Option<&'static 
     let signal_prev = signal_line[signal_line.len() - 2];
 
     if macd_prev <= signal_prev && macd_last > signal_last {
-        Some("buy")
+        Some("buy".to_string())
     } else if macd_prev >= signal_prev && macd_last < signal_last {
-        Some("sell")
+        Some("sell".to_string())
     } else {
         None
     }
 }
 
-// Modify execute_trade to print only buy/sell signals to the console
-async fn execute_trade(token: &str, action: &str, address: &str) {
-    println!("{} signal for {}: {}", action, token, address);  // Print buy/sell signals and contract address
+// Modify execute_trade to print buy/sell signals with more useful information
+async fn execute_trade(token: &str, action: &str, address: &str, coin_id: &str) {
+    let coin_gecko_url = format!("https://www.coingecko.com/en/coins/{}", coin_id);
+    println!("{} signal for {}: {}\nContract address: {}\nMore info: {}", action, token, action.to_uppercase(), address, coin_gecko_url);
 }
 
 #[tokio::main]
@@ -138,7 +139,7 @@ async fn main() {
 
     // Specify the network and wick size
     let network_to_scan = "the-open-network"; // Change this to the desired network
-    let wick_duration = Duration::from_secs(2); // Set to 60 seconds for 1-minute wicks, 2 seconds for rapid testing then tune the bot.
+    let wick_duration = Duration::from_secs(2); // Set to 60 seconds for 1-minute wicks
 
     // Fetch all coins from CoinGecko
     match fetch_all_coins(&client).await {
@@ -177,10 +178,10 @@ async fn main() {
                                         info!("Signal line for {}: {:?}", coin.symbol, signal);
 
                                         if prices.len() >= 26 {
-                                            if let Some(action) = check_macd_signal(&macd, &signal) {
+                                            if let Some(action) = check_macd_signal(&macd, &signal, coin) {
                                                 // Fetch contract address for "the-open-network"
                                                 let address = coin.platforms.get("the-open-network").map(|s| s.as_str()).unwrap_or("N/A");
-                                                execute_trade(&coin.symbol, action, address).await;
+                                                execute_trade(&coin.symbol, &action, address, &coin.id).await;
                                             }
                                         }
                                     } else {
