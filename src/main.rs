@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::time::Duration;
 use tokio::time::sleep;
-use log::{debug, info};
+use log::{debug, info, error};
 use simplelog::*;
 
 #[derive(Deserialize, Debug, Clone)]
@@ -20,15 +20,25 @@ struct Coin {
 async fn fetch_all_coins(client: &Client) -> Result<Vec<Coin>, Box<dyn std::error::Error>> {
     let url = "https://api.coingecko.com/api/v3/coins/list?include_platform=true";
     debug!("Fetching all coins from CoinGecko");
-    let response = client.get(url).send().await?.json::<Vec<Coin>>().await?;
-    debug!("Successfully fetched coins data");
-    Ok(response)
+
+    let response = client.get(url).send().await?;
+
+    // Check if the API response is in the expected format (array)
+    if response.status().is_success() {
+        let coins_data = response.json::<Vec<Coin>>().await?;
+        debug!("Successfully fetched coins data");
+        Ok(coins_data)
+    } else {
+        error!("Failed to fetch coins data: {}", response.status());
+        Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "Failed to fetch coins data")))
+    }
 }
 
 // Fetch price data for a specific coin from CoinGecko
 async fn fetch_price_data(client: &Client, coin_id: &str) -> Result<Option<f64>, Box<dyn std::error::Error>> {
     let url = format!("https://api.coingecko.com/api/v3/simple/price?ids={}&vs_currencies=usd", coin_id);
     debug!("Fetching price for coin: {}", coin_id);
+    
     let response = client.get(&url).send().await?.json::<serde_json::Value>().await?;
 
     // Check if the API returned a valid price format
@@ -125,50 +135,55 @@ async fn main() {
     let network_to_scan = "the-open-network"; // Change this line to scan a specific chain
 
     // Fetch all coins from CoinGecko
-    let all_coins = fetch_all_coins(&client).await.unwrap();
+    match fetch_all_coins(&client).await {
+        Ok(all_coins) => {
+            // Filter coins by the specified network
+            let coins = filter_coins_by_network(&all_coins, network_to_scan);
+            info!("Found {} coins on {}", coins.len(), network_to_scan);  // Log to debug.log
 
-    // Filter coins by the specified network
-    let coins = filter_coins_by_network(&all_coins, network_to_scan);
+            // Scan coins from the selected network
+            loop {
+                for coin in &coins {
+                    match fetch_price_data(&client, &coin.id).await {
+                        Ok(Some(price)) => {
+                            // Print to console when price data is found
+                            println!("Price data found for {}: ${}", coin.symbol, price);
 
-    info!("Found {} coins on {}", coins.len(), network_to_scan);  // Log to debug.log
+                            let prices: Vec<f64> = vec![price]; // Replace with real historical data
 
-    // Scan coins from the selected network
-    loop {
-        for coin in &coins {
-            match fetch_price_data(&client, &coin.id).await {
-                Ok(Some(price)) => {
-                    // Print to console when price data is found
-                    println!("Price data found for {}: ${}", coin.symbol, price);
+                            if prices.len() >= 1 {  // Updated to handle even 1 price point for now
+                                let (macd, signal) = calculate_macd(&prices);
 
-                    let prices: Vec<f64> = vec![price]; // Replace with real historical data
+                                // Print MACD and Signal line to console
+                                println!("MACD line for {}: {:?}", coin.symbol, macd);
+                                println!("Signal line for {}: {:?}", coin.symbol, signal);
 
-                    if prices.len() >= 1 {  // Updated to handle even 1 price point for now
-                        let (macd, signal) = calculate_macd(&prices);
-
-                        // Print MACD and Signal line to console
-                        println!("MACD line for {}: {:?}", coin.symbol, macd);
-                        println!("Signal line for {}: {:?}", coin.symbol, signal);
-
-                        if prices.len() >= 26 {  // Proceed only if we have enough data
-                            if let Some(action) = check_macd_signal(&macd, &signal) {
-                                execute_trade(&coin.symbol, action).await;  // Show buy/sell signals
+                                if prices.len() >= 26 {  // Proceed only if we have enough data
+                                    if let Some(action) = check_macd_signal(&macd, &signal) {
+                                        execute_trade(&coin.symbol, action).await;  // Show buy/sell signals
+                                    }
+                                }
                             }
                         }
+                        Ok(None) => {
+                            debug!("No price data for {}", coin.id);  // Log missing price data
+                        }
+                        Err(e) => {
+                            debug!("Error fetching price for {}: {:?}", coin.id, e);  // Log errors
+                        }
                     }
+
+                    // Sleep to avoid rate limits
+                    sleep(Duration::from_millis(100)).await;
                 }
-                Ok(None) => {
-                    debug!("No price data for {}", coin.id);  // Log missing price data
-                }
-                Err(e) => {
-                    debug!("Error fetching price for {}: {:?}", coin.id, e);  // Log errors
-                }
+
+                // Sleep before the next round of price fetching
+                sleep(Duration::from_secs(30)).await; // Reduced sleep time for faster iteration
             }
-
-            // Sleep to avoid rate limits
-            sleep(Duration::from_millis(100)).await;
         }
-
-        // Sleep before the next round of price fetching
-        sleep(Duration::from_secs(30)).await; // Reduced sleep time for faster iteration
+        Err(e) => {
+            error!("Error fetching all coins: {:?}", e);
+            println!("Failed to fetch all coins. Error: {:?}", e);
+        }
     }
 }
